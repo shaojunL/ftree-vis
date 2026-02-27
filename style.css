@@ -7,6 +7,9 @@ body, form input[type="text"] {
 .pod { fill: #005; }
 .cable { stroke: #999; stroke-width: 1px; }
 .host { fill: #500; }
+.pod.gpu-rack { fill: #063; }
+.cable.warm { stroke: #c98d1e; }
+.cable.hot { stroke: #b93535; }
 
 svg.main { display: block; margin: auto; z-index: -1; }
 

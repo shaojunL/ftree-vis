@@ -3,8 +3,13 @@ $(document).ready(docMain);
 var conf = new Object();
 conf['depth'] = 3;
 conf['width'] = 8;
+conf['gpuRackPct'] = 25;
+conf['gpuDemand'] = 4;
+conf['gpuUplinkBoost'] = 2;
+conf['edgeOversub'] = 2;
 
 var controlVisible = true;
+var lastMetrics = null;
 
 function docMain() {
     formInit();
@@ -25,7 +30,8 @@ function kpress(e) {
 }
 
 function redraw() {
-    drawFatTree(conf['depth'], conf['width']);
+    lastMetrics = drawFatTree(conf['depth'], conf['width']);
+    updateStat();
 }
 
 function drawFatTree(depth, width) {
@@ -43,8 +49,13 @@ function drawFatTree(depth, width) {
 
     d3.select("svg.main").remove();   
     if (kexp(depth - 1) > 1500 || depth <= 0 || k <= 0) {
-        return;
+        return null;
     }
+
+    var gpuRackPct = Math.max(0, Math.min(100, conf['gpuRackPct'] || 0));
+    var gpuDemand = Math.max(1, conf['gpuDemand'] || 1);
+    var gpuUplinkBoost = Math.max(1, conf['gpuUplinkBoost'] || 1);
+    var edgeOversub = Math.max(1, conf['edgeOversub'] || 1);
 
     var w = kexp(depth - 1) * padg + 200;
     var h = (2 * depth) * hline;
@@ -57,6 +68,18 @@ function drawFatTree(depth, width) {
         .attr("transform", "translate(" + w/2 + "," + h/2 + ")");
 
     var linePositions = [];
+
+    var totalEdgePerSide = kexp(depth - 1);
+    var totalRacks = totalEdgePerSide * 2;
+    var gpuRackCount = Math.floor((gpuRackPct / 100) * totalRacks);
+
+    function isGpuRack(sideSign, edgeIndex) {
+        var globalIndex = sideSign > 0 ? edgeIndex : (totalEdgePerSide + edgeIndex);
+        return globalIndex < gpuRackCount;
+    }
+
+    var hotUplinks = 0;
+    var maxUplinkUtil = 0;
 
     function podPositions(d) {
         var ret = [];
@@ -84,10 +107,15 @@ function drawFatTree(depth, width) {
         linePositions[i] = podPositions(i);
     }
 
-    function drawPods(list, y) {
+    function drawPods(list, y, sideSign) {
         for (var j = 0, n = list.length; j < n; j++) {
+            var classes = "pod";
+            if (Math.abs(y) === (depth - 1) * hline && isGpuRack(sideSign, j)) {
+                classes += " gpu-rack";
+            }
+
             svg.append("rect")
-                .attr("class", "pod")
+                .attr("class", classes)
                 .attr("width", podw)
                 .attr("height", podh)
                 .attr("x", list[j] - podw/2)
@@ -129,9 +157,9 @@ function drawFatTree(depth, width) {
         }
     }
     
-    function linePods(d, list1, list2, y1, y2) {
-        var pergroup = kexp(depth - 1 - d);
-        var ngroup = kexp(d);
+    function linePods(level, list1, list2, y1, y2, sideSign) {
+        var pergroup = kexp(depth - 1 - level);
+        var ngroup = kexp(level);
 
         var perbundle = pergroup / k;
         
@@ -141,10 +169,37 @@ function drawFatTree(depth, width) {
                 var boffset = perbundle * j;
                 for (var t = 0; t < perbundle; t++) {
                     var ichild = offset + boffset + t;
-                    for (var d = 0; d < k; d++) {
-                        var ifather = offset + perbundle * d + t;
+                    for (var lane = 0; lane < k; lane++) {
+                        var ifather = offset + perbundle * lane + t;
+                        var classes = "cable";
+                        var strokeWidth = 1;
+
+                        if (level === depth - 2) {
+                            var gpuRack = isGpuRack(sideSign, ichild);
+                            var rackDemand = gpuRack ? gpuDemand : 1;
+                            var linkLoad = rackDemand / k;
+                            var linkCap = (gpuRack ? gpuUplinkBoost : 1) / edgeOversub;
+                            var util = linkLoad / linkCap;
+
+                            if (util > maxUplinkUtil) {
+                                maxUplinkUtil = util;
+                            }
+                            if (util > 1) {
+                                hotUplinks++;
+                            }
+
+                            if (util > 1) {
+                                classes += " hot";
+                            } else if (util > 0.7) {
+                                classes += " warm";
+                            }
+
+                            strokeWidth = 1 + (gpuRack ? 1 : 0) + Math.min(1.5, linkCap * 0.4);
+                        }
+
                         svg.append("line")
-                            .attr("class", "cable")
+                            .attr("class", classes)
+                            .attr("stroke-width", strokeWidth)
                             .attr("x1", list1[ifather])
                             .attr("y1", y1)
                             .attr("x2", list2[ichild])
@@ -156,8 +211,8 @@ function drawFatTree(depth, width) {
     }
 
     for (var i = 0; i < depth - 1; i++) {
-        linePods(i, linePositions[i], linePositions[i + 1], i * hline, (i + 1) * hline);
-        linePods(i, linePositions[i], linePositions[i + 1], -i * hline, -(i + 1) * hline);
+        linePods(i, linePositions[i], linePositions[i + 1], i * hline, (i + 1) * hline, 1);
+        linePods(i, linePositions[i], linePositions[i + 1], -i * hline, -(i + 1) * hline, -1);
     }
 
     drawHosts(linePositions[depth - 1], (depth - 1) * hline, 1);
@@ -165,12 +220,20 @@ function drawFatTree(depth, width) {
 
     for (var i = 0; i < depth; i++) {
         if (i == 0) {
-            drawPods(linePositions[0], 0);
+            drawPods(linePositions[0], 0, 1);
         } else {
-            drawPods(linePositions[i], i * hline);
-            drawPods(linePositions[i], -i * hline);
+            drawPods(linePositions[i], i * hline, 1);
+            drawPods(linePositions[i], -i * hline, -1);
         }
     }
+
+    return {
+        totalRacks: totalRacks,
+        gpuRackCount: gpuRackCount,
+        hotUplinks: hotUplinks,
+        maxUplinkUtil: maxUplinkUtil,
+        ecmpPaths: kexp(Math.max(0, depth - 1))
+    };
 }
 
 function updateStat() {
@@ -182,6 +245,11 @@ function updateStat() {
         d3.select("#ncable").html("&nbsp;");
         d3.select("#ntx").html("&nbsp;");
         d3.select("#nswtx").html("&nbsp;");
+        d3.select("#nrack").html("&nbsp;");
+        d3.select("#ngpurack").html("&nbsp;");
+        d3.select("#nhot").html("&nbsp;");
+        d3.select("#nmaxutil").html("&nbsp;");
+        d3.select("#npaths").html("&nbsp;");
         return;
     }
     
@@ -198,6 +266,21 @@ function updateStat() {
     d3.select("#ncable").html(formatNum(ncable));
     d3.select("#ntx").html(formatNum(ntx));
     d3.select("#nswtx").html(formatNum(nswtx));
+
+    if (!lastMetrics) {
+        d3.select("#nrack").html("&nbsp;");
+        d3.select("#ngpurack").html("&nbsp;");
+        d3.select("#nhot").html("&nbsp;");
+        d3.select("#nmaxutil").html("&nbsp;");
+        d3.select("#npaths").html("&nbsp;");
+        return;
+    }
+
+    d3.select("#nrack").html(formatNum(lastMetrics.totalRacks));
+    d3.select("#ngpurack").html(formatNum(lastMetrics.gpuRackCount));
+    d3.select("#nhot").html(formatNum(lastMetrics.hotUplinks));
+    d3.select("#nmaxutil").html(lastMetrics.maxUplinkUtil.toFixed(2) + "x");
+    d3.select("#npaths").html(formatNum(lastMetrics.ecmpPaths));
 }
 
 function formatNum(x) {
@@ -213,7 +296,11 @@ function formInit() {
 
     function confInt() { 
         conf[this.name] = parseInt(this.value); 
-        updateStat();
+        redraw();
+    }
+
+    function confFloat() {
+        conf[this.name] = parseFloat(this.value);
         redraw();
     }
 
@@ -225,5 +312,9 @@ function formInit() {
 
     hook("depth", confInt);
     hook("width", confInt);
+    hook("gpuRackPct", confFloat);
+    hook("gpuDemand", confFloat);
+    hook("gpuUplinkBoost", confFloat);
+    hook("edgeOversub", confFloat);
 }
 

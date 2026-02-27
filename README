@@ -1,1 +1,13 @@
 A fat tree visualizer in Javascript.
+
+New scenario controls (simple):
+- GPU Rack %: fraction of edge racks modeled as GPU-heavy racks.
+- GPU Demand x: per-rack traffic demand multiplier for GPU racks.
+- GPU Uplink x: uplink capacity multiplier for GPU racks.
+- Edge Oversub x: oversubscription factor applied to edge uplinks.
+
+Visual cues:
+- Green edge pods are GPU racks.
+- Edge uplinks are colored by utilization (gray normal, amber warm, red congested).
+
+Summary stats include GPU rack count, hot uplink count, max uplink utilization, and an ECMP path diversity estimate.
